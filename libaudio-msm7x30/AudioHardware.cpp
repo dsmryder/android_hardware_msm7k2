@@ -183,7 +183,17 @@ void addToTable(int decoder_id, int device_id, int device_id_tx, int stream_type
     temp_ptr->dev_id_tx = device_id_tx;
     temp_ptr->stream_type = stream_type;
     temp_ptr->active = active;
-    /* add new Node to head  */
+    /*make sure Voice node is always on top.
+      For voice call device Switching, there a limitation
+      Routing must happen before disabling/Enabling device. */
+    if(head->next != NULL){
+        if(head->next->stream_type == VOICE_CALL){
+            temp_ptr->next = head->next->next;
+            head->next->next = temp_ptr;
+            return;
+        }
+    }
+    /* add new Node to head. */
     temp_ptr->next = head->next;
     head->next = temp_ptr;
 }
