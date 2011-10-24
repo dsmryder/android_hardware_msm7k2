@@ -122,9 +122,11 @@ uint32_t AudioPolicyManager::getDeviceForStrategy(routing_strategy strategy, boo
             device = getDeviceForStrategy(STRATEGY_PHONE, false);
             break;
         }
-        device = mAvailableOutputDevices & AudioSystem::DEVICE_OUT_SPEAKER;
-        if (device == 0) {
-            LOGE("getDeviceForStrategy() speaker device not found");
+        if (strategy == STRATEGY_SONIFICATION) {
+            device = mAvailableOutputDevices & AudioSystem::DEVICE_OUT_SPEAKER;
+            if (device == 0) {
+                LOGE("getDeviceForStrategy() speaker device not found");
+            }
         }
         // The second device used for sonification is the same as the device used by media strategy
         // FALL THROUGH

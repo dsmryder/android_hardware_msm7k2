@@ -597,15 +597,6 @@ status_t AudioHardware::doRouting()
                 LOGI("Routing audio to Wired Headset\n");
                 sndDevice = SND_DEVICE_HEADSET;
             }
-        } else {
-            if (outputDevices & AudioSystem::DEVICE_OUT_SPEAKER) {
-                LOGI("Routing audio to Speakerphone\n");
-                sndDevice = SND_DEVICE_SPEAKER;
-                audProcess = (ADRC_ENABLE | EQ_ENABLE | RX_IIR_ENABLE);
-            } else {
-                LOGI("Routing audio to Handset\n");
-                sndDevice = SND_DEVICE_HANDSET;
-            }
         }
     }
     // if inputDevice == 0, restore output routing
