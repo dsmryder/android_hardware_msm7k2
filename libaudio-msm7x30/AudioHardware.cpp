@@ -17,7 +17,7 @@
 */
 
 //#define LOG_NDEBUG 0
-//#define LOG_NDDEBUG 0
+#define LOG_NDDEBUG 0
 #define LOG_TAG "AudioHardwareMSM7X30"
 
 #include <math.h>
@@ -142,6 +142,7 @@ const char ** name = NULL;
 int mixer_cnt = 0;
 static uint32_t cur_tx = INVALID_DEVICE;
 static uint32_t cur_rx = INVALID_DEVICE;
+bool vMicMute = false;
 
 typedef struct routing_table {
     unsigned short dec_id;
@@ -186,8 +187,8 @@ void addToTable(int decoder_id, int device_id, int device_id_tx, int stream_type
     /*make sure Voice node is always on top.
       For voice call device Switching, there a limitation
       Routing must happen before disabling/Enabling device. */
-    if(head->next != NULL){
-        if(head->next->stream_type == VOICE_CALL){
+    if (head->next != NULL) {
+        if (head->next->stream_type == VOICE_CALL ){
             temp_ptr->next = head->next->next;
             head->next->next = temp_ptr;
             return;
@@ -323,11 +324,7 @@ int enableDevice(int device, short enable) {
 void updateACDB(uint32_t new_rx_device, uint32_t new_tx_device,
                 uint32_t new_rx_acdb, uint32_t new_tx_acdb) {
 
-    if (!isHTCPhone) {
-        LOGD("This is not an HTC Phone, skip updateACDB()");
-        return;
-    } else
-        LOGD("updateACDB: (%d, %d, %d, %d) ", new_tx_device, new_rx_device, new_tx_acdb, new_rx_acdb);
+    LOGD("updateACDB: (%d, %d, %d, %d) ", new_tx_device, new_rx_device, new_tx_acdb, new_rx_acdb);
 
     int rc = -1;
     int (*update_acdb_id)(uint32_t, uint32_t, uint32_t, uint32_t);
@@ -347,6 +344,7 @@ static status_t updateDeviceInfo(uint32_t rx_device, uint32_t tx_device,
     LOGD("updateDeviceInfo: E rx_device %d and tx_device %d", rx_device, tx_device);
     bool isRxDeviceEnabled = false, isTxDeviceEnabled = false;
     Routing_table *temp_ptr, *temp_head;
+    int tx_dev_prev = INVALID_DEVICE;
     temp_head = head;
 
     Mutex::Autolock lock(mDeviceSwitchLock);
@@ -416,8 +414,15 @@ static status_t updateDeviceInfo(uint32_t rx_device, uint32_t tx_device,
                     LOGE("msm_route_stream(PCM_REC, %d, %d, 1) failed", temp_ptr->dec_id, DEV_ID(tx_device));
                 }
                 modifyActiveDeviceOfStream(PCM_REC, tx_device, INVALID_DEVICE);
+                tx_dev_prev = cur_tx;
                 cur_tx = tx_device;
                 cur_rx = rx_device;
+#ifdef WITH_QCOM_VOIPMUTE
+                if ((vMicMute == true) && (tx_dev_prev != cur_tx)) {
+                    LOGD("REC:device switch with mute enabled :tx_dev_prev %d cur_tx: %d", tx_dev_prev, cur_tx);
+                    msm_device_mute(DEV_ID(cur_tx), true);
+                }
+#endif
                 break;
             case VOICE_CALL:
                 LOGD("case VOICE_CALL");
@@ -426,7 +431,8 @@ static status_t updateDeviceInfo(uint32_t rx_device, uint32_t tx_device,
                 if (rx_device == temp_ptr->dev_id && tx_device == temp_ptr->dev_id_tx)
                     break;
 
-                updateACDB(rx_device, tx_device, rx_acdb_id, tx_acdb_id);
+                if (isHTCPhone)
+                    updateACDB(rx_device, tx_device, rx_acdb_id, tx_acdb_id);
                 msm_route_voice(DEV_ID(rx_device), DEV_ID(tx_device), 1);
 
                 /* Temporary work around for Speaker mode. The driver is not
@@ -510,6 +516,11 @@ AudioHardware::AudioHardware() :
     control = msm_mixer_open("/dev/snd/controlC0", 0);
     if (control < 0)
         LOGE("ERROR opening the device");
+
+#ifdef WITH_QCOM_RESETALL
+    if (msm_reset_all_device() < 0)
+        LOGE("msm_reset_all_device() failed");
+#endif
 
     mixer_cnt = msm_mixer_count();
     LOGD("msm_mixer_count:mixer_cnt = %d", mixer_cnt);
@@ -661,11 +672,11 @@ AudioHardware::AudioHardware() :
     support_back_mic = (int (*)(void))::dlsym(acoustic, "support_back_mic");
     if ((*support_back_mic) == 0 ) {
         LOGI("support_back_mic() not present");
-            support_htc_backmic = false;
+        support_htc_backmic = false;
     }
 
     if (support_htc_backmic) {
-        if (support_back_mic() < 0) {
+        if (support_back_mic() != 1) {
             LOGI("HTC DualMic is not supported");
             support_htc_backmic = false;
         }
@@ -850,7 +861,18 @@ status_t AudioHardware::setMicMute_nosync(bool state) {
     if (mMicMute != state) {
         mMicMute = state;
         LOGD("setMicMute_nosync calling voice mute with the mMicMute %d", mMicMute);
-        msm_set_voice_tx_mute(mMicMute);
+#ifdef WITH_QCOM_VOIPMUTE
+        if (isStreamOnAndActive(PCM_REC) && (mMode == AudioSystem::MODE_IN_COMMUNICATION)) {
+            vMicMute = state;
+            LOGD("VOIP Active: vMicMute %d", vMicMute);
+            msm_device_mute(DEV_ID(cur_tx), vMicMute);
+        } else {
+#endif
+            LOGD("setMicMute_nosync:voice_mute");
+            msm_set_voice_tx_mute(mMicMute);
+#ifdef WITH_QCOM_VOIPMUTE
+        }
+#endif
     }
     return NO_ERROR;
 }
@@ -945,7 +967,7 @@ status_t AudioHardware::setParameters(const String8& keyValuePairs) {
         if (mMode != AudioSystem::MODE_IN_CALL)
            return NO_ERROR;
 
-        LOGI("Changed TTY Mode=%s", value.string());
+        LOGI("Changed TTY Mode = %s", value.string());
         doRouting(NULL);
     }
 
@@ -1369,7 +1391,8 @@ static status_t do_route_audio_rpc(uint32_t device, bool ear_mute, bool mic_mute
         /* Routing Voice */
         if ((new_rx_device != INVALID_DEVICE) && (new_tx_device != INVALID_DEVICE)) {
             LOGD("Starting voice on Rx %d and Tx %d device", DEV_ID(new_rx_device), DEV_ID(new_tx_device));
-            updateACDB(new_rx_device, new_tx_device, rx_acdb_id, tx_acdb_id);
+            if (isHTCPhone)
+                updateACDB(new_rx_device, new_tx_device, rx_acdb_id, tx_acdb_id);
             msm_route_voice(DEV_ID(new_rx_device), DEV_ID(new_tx_device), 1);
         } else
             return -1;
@@ -1504,7 +1527,6 @@ status_t AudioHardware::get_mRecordState(void) {
 }
 
 status_t AudioHardware::get_snd_dev(void) {
-    Mutex::Autolock lock(mLock);
     return mCurSndDevice;
 }
 
@@ -1682,6 +1704,7 @@ status_t AudioHardware::do_aic3254_control(uint32_t device) {
             switch (device) {
                 case SND_DEVICE_HEADSET:
                     new_aic_txmode = VOICERECORD_EMIC;
+                    break;
                 case SND_DEVICE_HANDSET_BACK_MIC:
                 case SND_DEVICE_SPEAKER_BACK_MIC:
                 case SND_DEVICE_NO_MIC_HEADSET_BACK_MIC:
@@ -2382,9 +2405,6 @@ ssize_t AudioHardware::AudioStreamOutMSM72xx::write(const void* buffer, size_t b
 
         if (support_tpa2051)
             do_tpa2051_control(0);
-
-        if (support_aic3254)
-            mHardware->do_aic3254_control(mHardware->get_snd_dev());
     }
 
     while (count) {
@@ -2413,14 +2433,26 @@ ssize_t AudioHardware::AudioStreamOutMSM72xx::write(const void* buffer, size_t b
 
             Mutex::Autolock lock(mDeviceSwitchLock);
 
-            LOGV("cur_rx for pcm playback = %d", cur_rx);
-            if (enableDevice(cur_rx, 1)) {
-                LOGE("enableDevice failed for device cur_rx %d", cur_rx);
-                return 0;
-            }
+            if (isHTCPhone) {
+                int snd_dev = mHardware->get_snd_dev();
+                if (support_aic3254)
+                    mHardware->do_aic3254_control(snd_dev);
 
-            uint32_t rx_acdb_id = mHardware->getACDB(MOD_PLAY, mHardware->get_snd_dev());
-            updateACDB(cur_rx, cur_tx, rx_acdb_id, 0);
+                LOGV("cur_rx for pcm playback = %d", cur_rx);
+                if (enableDevice(cur_rx, 1)) {
+                    LOGE("enableDevice failed for device cur_rx %d", cur_rx);
+                    return 0;
+                }
+
+                uint32_t rx_acdb_id = mHardware->getACDB(MOD_PLAY, snd_dev);
+                updateACDB(cur_rx, cur_tx, rx_acdb_id, 0);
+            } else {
+                LOGV("cur_rx for pcm playback = %d", cur_rx);
+                if (enableDevice(cur_rx, 1)) {
+                    LOGE("enableDevice failed for device cur_rx %d", cur_rx);
+                    return 0;
+                }
+            }
 
             LOGD("msm_route_stream(PCM_PLAY, %d, %d, 1)", dec_id, DEV_ID(cur_rx));
             if (msm_route_stream(PCM_PLAY, dec_id, DEV_ID(cur_rx), 1)) {
@@ -2909,7 +2941,7 @@ status_t AudioHardware::AudioStreamInMSM72xx::set(
         LOGV("The Config frame_format is %d", amr_nb_cfg.frame_format);
 
         amr_nb_cfg.band_mode = 7; /* Bit Rate 12.2 kbps MR122 */
-        amr_nb_cfg.dtx_enable= 0;
+        amr_nb_cfg.dtx_enable = 0;
         amr_nb_cfg.frame_format = 0; /* IF1 */
 
         if (ioctl(mFd, AUDIO_SET_AMRNB_ENC_CONFIG_V2, &amr_nb_cfg)) {
@@ -2995,7 +3027,7 @@ ssize_t AudioHardware::AudioStreamInMSM72xx::read( void* buffer, ssize_t bytes) 
         return -1;
 
     size_t count = bytes;
-    size_t aac_framesize= bytes;
+    size_t aac_framesize = bytes;
     uint8_t* p = static_cast<uint8_t*>(buffer);
     uint32_t* recogPtr = (uint32_t *)p;
     uint16_t* frameCountPtr;
@@ -3048,7 +3080,7 @@ ssize_t AudioHardware::AudioStreamInMSM72xx::read( void* buffer, ssize_t bytes) 
                 LOGE("AUDIO_GET_SESSION_ID failed*********");
                 return -1;
             }
-            LOGV("dec_id = %d,cur_tx= %d", dec_id, cur_tx);
+            LOGV("dec_id = %d, cur_tx = %d", dec_id, cur_tx);
             if (cur_tx == INVALID_DEVICE)
                 cur_tx = DEVICE_HANDSET_TX;
 
@@ -3059,8 +3091,10 @@ ssize_t AudioHardware::AudioStreamInMSM72xx::read( void* buffer, ssize_t bytes) 
                 return -1;
             }
 
-            uint32_t tx_acdb_id = mHardware->getACDB(MOD_REC, mHardware->get_snd_dev());
-            updateACDB(cur_rx, cur_tx, 0, tx_acdb_id);
+            if (isHTCPhone) {
+                uint32_t tx_acdb_id = mHardware->getACDB(MOD_REC, mHardware->get_snd_dev());
+                updateACDB(cur_rx, cur_tx, 0, tx_acdb_id);
+            }
 
             LOGD("msm_route_stream(PCM_PLAY, %d, %d, 1)", dec_id, DEV_ID(cur_rx));
             if (msm_route_stream(PCM_REC, dec_id, DEV_ID(cur_tx), 1)) {

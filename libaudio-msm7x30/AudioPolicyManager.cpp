@@ -919,10 +919,12 @@ void AudioPolicyManager::setStreamMute(int stream, bool on, audio_io_handle_t ou
             if (stream == mLPAStreamType && false == mLPAMuted) {
                 mLPAMuted = true;
             }
+        } else {
+#endif
+           // increment mMuteCount after calling checkAndSetVolume() so that volume change is not ignored
+            outputDesc->mMuteCount[stream]++;
+#ifdef WITH_QCOM_LPA
         }
-#else
-        // increment mMuteCount after calling checkAndSetVolume() so that volume change is not ignored
-        outputDesc->mMuteCount[stream]++;
 #endif
     } else {
 #ifdef WITH_QCOM_LPA
@@ -938,6 +940,10 @@ void AudioPolicyManager::setStreamMute(int stream, bool on, audio_io_handle_t ou
         if (output == mLPADecodeOutput) {
             if (stream == mLPAStreamType && true == mLPAMuted) {
                 mLPAMuted = false;
+                checkAndSetVolume(stream, streamDesc.mIndexCur, output, outputDesc->device(), delayMs);
+            }
+        } else {
+            if (--outputDesc->mMuteCount[stream] == 0) {
                 checkAndSetVolume(stream, streamDesc.mIndexCur, output, outputDesc->device(), delayMs);
             }
         }

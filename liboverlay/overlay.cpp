@@ -448,8 +448,8 @@ public:
 			munmap(ctx->sharedMemBase, sizeof(overlay_shared_data));
 			ctx->sharedMemBase = MAP_FAILED;
 		}
-		obj->destroy_overlay();
-		delete overlay;
+                // ~overlay_object calls destroy_overlay
+		delete obj;
 	}
 
 	static int overlay_setPosition(struct overlay_control_device_t *dev,
